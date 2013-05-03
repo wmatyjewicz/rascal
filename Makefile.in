@@ -1,0 +1,13 @@
+# Copyright (C) 2013 Wojciech Matyjewicz
+#
+# This file is distributed under the terms of the MIT License.
+# See LICENSE file for details.
+
+RUSTLLVMDIR = # Enter path to rustllvm library (librustllvm.so)
+
+BIN = rascal
+SOURCES = util.rs token.rs lexer.rs ast.rs parser.rs checker.rs emitter.rs driver.rs
+CRATE = rascal.rc
+
+$(BIN):	$(CRATE) $(SOURCES)
+	rustc -o $@ -L $(RUSTLLVMDIR) $<
