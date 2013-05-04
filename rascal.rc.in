@@ -3,8 +3,8 @@
 // This file is distributed under the terms of the MIT License.
 // See LICENSE file for details.
 
-//#[path = "Enter path to LLVM Rust bindings module (llvm.rs)"]
-//pub mod rustllvm;
+#[path = "Enter path to LLVM Rust bindings module (llvm.rs)"]
+pub mod rustllvm;
 
 pub mod util;
 pub mod token;
@@ -12,5 +12,5 @@ pub mod lexer;
 pub mod ast;
 pub mod parser;
 pub mod checker;
-//pub mod emitter;
+pub mod emitter;
 pub mod driver;
