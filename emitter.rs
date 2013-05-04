@@ -6,7 +6,7 @@
 // LLVM IR emitter
 
 use core::libc::{c_char, c_uint, c_ulonglong};
-use core::hashmap::linear::LinearMap;
+use core::hashmap::HashMap;
 
 use rustllvm::{ModuleRef, TypeRef, ValueRef, BuilderRef};
 use rustllvm::llvm;
@@ -33,7 +33,7 @@ static LexicalBlockTag: i32 = 11;
 static DW_ATE_boolean: int = 2;
 static DW_ATE_signed: int = 5;
 
-type ObjectMap = LinearMap<@str, ValueRef>;
+type ObjectMap = HashMap<@str, ValueRef>;
 
 priv struct EmitterContext {
     llmod: ModuleRef,
@@ -60,9 +60,7 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
     let mdboolean = basic_type_description("boolean", 1, 1, DW_ATE_boolean);
     
     let mdfile = mdnode([dbgtag(FileTag),
-                         mdstr(filename),
-                         mdstr(dirname),
-                         mdnull()]);
+                         mdnode([mdstr(filename), mdstr(dirname)])]);
 
     let mut ec = unsafe {
         let llctx = llvm::LLVMGetGlobalContext();
@@ -83,7 +81,8 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
             llmod: llmod,
             llbuilder: llbuilder,
 
-            var_map: LinearMap::new(),
+            var_map: HashMap::new(),
+            proc_map: HashMap::new(),
 
             mdempty: mdempty,
             mdinteger: mdinteger,
@@ -102,34 +101,33 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
         }
     }
 
-    main_proc = Proc {
+    let main_proc = Proc {
         pos: program.block.pos,
         name: @"main",
         args: ~[],
-        ret_ty: Some<IntegerType>,
+        ret_ty: Some(IntegerType),
         vars: ~[],
-        block: program.block
-    }
+        block: copy program.block // TODO: think of something better
+    };
     emit_proc(&mut ec, &main_proc);
 
     let mdsubprogs = mdnode(ec.mdsubprogs);
     let mdvars =
-        if ec.mdvars.is_empty() { ec.mdempty } else { mdnode(ec.mdvars) };
+        if ec.mdvars.is_empty() { mdempty } else { mdnode(ec.mdvars) };
     
     let mdcu = mdnode([dbgtag(CompileUnitTag),
                        const_i32(0),          // unusued
                        const_i32(9),          // Pascal
-                       mdstr(filename),
-                       mdstr(dirname),
-                       mdstr("tp"),           // producer
-                       const_i1(true),        // main
-                       const_i1(false),       // optimized
+                       mdfile,
+                       mdstr("rascal"),       // producer
+                       const_bool(false),     // optimized
                        mdstr(""),             // flags
                        const_i32(0),          // runtime version
-                       mdnode([mdempty]),     // enum types
-                       mdnode([mdempty]),     // retained types
-                       mdnode([mdsubprogs]),  // subprograms
-                       mdnode([mdvars])]);    // global variables
+                       mdempty,               // enum types
+                       mdempty,               // retained types
+                       mdsubprogs,            // subprograms
+                       mdvars,                // global variables
+                       mdstr("")]);           // split debug file name
 
     emit_named_metadata(&ec, "llvm.dbg.cu", mdcu);
 
@@ -162,9 +160,9 @@ fn basic_type_description(name: &str, size: int, align: int, encoding: int) -> V
 // TODO: arg name
 fn subroutine_type_description(file_node: ValueRef, member_nodes: &[ValueRef]) -> ValueRef {
     mdnode([dbgtag(SubroutineTypeTag),
-            mdnull(),      // context
+            const_i32(0),  // ?
             mdstr(""),     // name
-            mdnull(),      // file
+            const_i32(0),  // ?
             const_i32(0),  // line number
             const_i64(0),  // size
             const_i64(0),  // align
@@ -172,7 +170,8 @@ fn subroutine_type_description(file_node: ValueRef, member_nodes: &[ValueRef]) -
             const_i32(0),  // flags
             mdnull(),      // derived from
             mdnode(member_nodes),
-            const_i32(0)]) // runtime language
+            const_i32(0),  // ?
+            const_i32(0)]) // ?
 }
 
 fn subprogram_description(name: &str, file_node: ValueRef, ty_node: ValueRef,
@@ -187,13 +186,13 @@ fn subprogram_description(name: &str, file_node: ValueRef, ty_node: ValueRef,
             file_node,
             const_i32(line as i32),
             ty_node,
-            const_i1(false), // static
-            const_i1(true),  // not extern
+            const_bool(false), // static
+            const_bool(true),  // not extern
             const_i32(0),    // virtuality
             const_i32(0),    // virtual index
             mdnull(),        // type containing ptr to vtable
             const_i32(256),  // flags [TODO: CHECK]
-            const_i1(false), // optimized
+            const_bool(false), // optimized
             ptr,
             mdnull(),        // template parameters
             mdnull(),        // TODO: declaration? when?
@@ -213,9 +212,10 @@ fn variable_description(name: &str, file_node: ValueRef, line: uint, type_node: 
             file_node,
             const_i32(line as i32),
             type_node,
-            const_i1(true),  // static
-            const_i1(true),  // not extern
-            ptr])
+            const_bool(true),  // static
+            const_bool(true),  // not extern
+            ptr,
+            mdnull()])
 }
 
 fn lexical_block(mdcontext: ValueRef, pos: Position,
@@ -248,69 +248,95 @@ fn emit_global_var(ec: &mut EmitterContext, var: &Var) {
 fn emit_proc(ec: &mut EmitterContext, proc: &Proc) {
     let (llretty, mdretty) = match proc.ret_ty {
         Some(ty) => (translate_type(ty), translate_mdtype(ec, ty)),
-        None => (type_void(), ec.mdnull)
+        None => (type_void(), mdnull())
+    };
+    let mut llargtys = ~[];
+    let mut mdtys = ~[mdretty];
+    for proc.args.each |arg| {
+        llargtys.push(translate_type(arg.ty));
+        mdtys.push(translate_mdtype(ec, arg.ty));
     }
-    let llargtys = proc.args.map |arg| { translate_type(arg.ty) }
-    let llty = type_fn(llret_ty, llarg_tys);
+
+    let llty = type_fn(llretty, llargtys);
 
     unsafe {
         let llmain = str::as_c_str(proc.name, |name| {
             llvm::LLVMAddFunction(ec.llmod, name, llty)
         });
 
-        let mdtype = subroutine_type_description(ec.mdfile, [ec.mdinteger]);
-        let mdfunc = subprogram_description("main", ec.mdfile, mdtype,
-                                            llmain, mdnode([ec.mdempty]), pos.line,
-                                            pos.line);
+        ec.proc_map.insert(proc.name, llmain);
+
+        let mdtype = subroutine_type_description(ec.mdfile, mdtys);
+        let mdfunc = subprogram_description(proc.name, ec.mdfile, mdtype,
+                                            llmain, ec.mdempty,
+                                            proc.pos.line,
+                                            proc.block.pos.line); //TODO:check
         ec.mdsubprogs.push(mdfunc);
 
-        let mdblock = lexical_block(mdfunc, pos, ec.mdfile);
+//        let mdblock = lexical_block(mdfunc, proc.block.pos, ec.mdfile);
 
         let llentry = str::as_c_str("entry", |name| {
             llvm::LLVMAppendBasicBlock(llmain, name)
         });
         llvm::LLVMPositionBuilderAtEnd(ec.llbuilder, llentry);
 
-        for stmts.each |stmt| {
-            emit_stmt(ec, stmt, mdblock);
+        let llretvar = match proc.ret_ty {
+            Some(_) => {
+                let llvar = str::as_c_str(proc.name, |name| {
+                    llvm::LLVMBuildAlloca(ec.llbuilder, llretty, name)
+                });
+                ec.var_map.insert(proc.name, llvar);
+                Some(llvar)
+            },
+            None => None
+        };
+        
+        let mut i = 0;
+        // TODO: it should go to procedure context
+        for proc.args.each |arg| {
+            let llarg = llvm::LLVMGetParam(llmain, i as c_uint);
+            let llargvar = str::as_c_str(arg.name, |name| {
+                // TODO: debug info
+                llvm::LLVMBuildAlloca(ec.llbuilder, llargtys[i], name)
+            });
+            llvm::LLVMBuildStore(ec.llbuilder, llarg, llargvar);
+            ec.var_map.insert(arg.name, llargvar);
+
+            i += 1;
+        }
+
+        // TODO: it should go to procedure context
+        for proc.vars.each |var| {
+            let llvarty = translate_type(var.ty);
+            let llvar = str::as_c_str(var.name, |name| {
+                // TODO: debug info
+                llvm::LLVMBuildAlloca(ec.llbuilder, llvarty, name)
+            });
+            llvm::LLVMBuildStore(ec.llbuilder, const_zero(llvarty), llvar);
+            ec.var_map.insert(var.name, llvar);
+        }
+
+        for proc.block.stmts.each |stmt| {
+            emit_stmt(ec, stmt, mdfunc);
         }
     
         unset_debug_loc(ec);
 
-        llvm::LLVMBuildRet(ec.llbuilder, llvm::LLVMConstNull(type_i32()));
-    }
-}
-
-fn emit_main_func(ec: &mut EmitterContext, stmts: &[Stmt], pos: Position) {
-    let llty = type_fn(type_i32(), []);
-    unsafe {
-        let llmain = str::as_c_str("main", |name| {
-            llvm::LLVMAddFunction(ec.llmod, name, llty)
-        });
-
-        let mdtype = subroutine_type_description(ec.mdfile, [ec.mdinteger]);
-        let mdfunc = subprogram_description("main", ec.mdfile, mdtype,
-                                            llmain, mdnode([ec.mdempty]), pos.line,
-                                            pos.line);
-        ec.mdsubprogs.push(mdfunc);
-
-        let mdblock = lexical_block(mdfunc, pos, ec.mdfile);
-
-        let llentry = str::as_c_str("entry", |name| {
-            llvm::LLVMAppendBasicBlock(llmain, name)
-        });
-        llvm::LLVMPositionBuilderAtEnd(ec.llbuilder, llentry);
-
-        for stmts.each |stmt| {
-            emit_stmt(ec, stmt, mdblock);
+        match llretvar {
+            Some(llvar) => {
+                let llretval = do noname |name| {
+                    llvm::LLVMBuildLoad(ec.llbuilder, llvar, name)
+                };
+                llvm::LLVMBuildRet(ec.llbuilder, llretval);
+            },
+            None => {
+                llvm::LLVMBuildRetVoid(ec.llbuilder);
+            }
         }
-    
-        unset_debug_loc(ec);
-
-        llvm::LLVMBuildRet(ec.llbuilder, llvm::LLVMConstNull(type_i32()));
     }
 }
 
+// TODO: scope_node?
 fn emit_stmt(ec: &EmitterContext, stmt: &Stmt, scope_node: ValueRef) {
     match *stmt {
         AssignmentStmt(pos, var_name, ref expr) => {
@@ -320,6 +346,21 @@ fn emit_stmt(ec: &EmitterContext, stmt: &Stmt, scope_node: ValueRef) {
             let llval = emit_expr(ec, *expr);
             unsafe {
                 llvm::LLVMBuildStore(ec.llbuilder, llval, llvar)
+            };
+        },
+        CallStmt(pos, proc_name, ref args) => {
+            set_debug_loc(ec, pos, scope_node);
+
+            let llproc = get_proc_pointer(ec, proc_name);
+            
+            let llargs = do args.map |arg| { emit_expr(ec, arg) };
+
+            do noname |name| {
+                unsafe {
+                    llvm::LLVMBuildCall(ec.llbuilder, llproc, 
+                                        vec::raw::to_ptr(llargs),
+                                        llargs.len() as u32, name)
+                }
             };
         },
         IfStmt(pos, ref cond, ref then_stmt, ref opt_else_stmt) => unsafe {
@@ -360,8 +401,8 @@ fn emit_stmt(ec: &EmitterContext, stmt: &Stmt, scope_node: ValueRef) {
 
             llvm::LLVMPositionBuilderAtEnd(ec.llbuilder, llendbb);
         },
-        BlockStmt(_, ref stmts) => {
-            for stmts.each |stmt| {
+        BlockStmt(_, ref block) => {
+            for block.stmts.each |stmt| {
                 emit_stmt(ec, stmt, scope_node);
             }
         }
@@ -386,10 +427,22 @@ fn unset_debug_loc(ec: &EmitterContext) {
 
 fn emit_expr(ec: &EmitterContext, expr: &Expr) -> ValueRef {
     match *expr {
-        IntLiteralExpr(_, num) => const_i64(num),
+        IntLiteralExpr(_, num) => const_i32(num),
+        BooleanLiteralExpr(_, b) => const_bool(b),
         VarValExpr(_, var_name) => unsafe {
             let llvar = get_var_pointer(ec, var_name);
             do noname |name| { llvm::LLVMBuildLoad(ec.llbuilder, llvar, name) }
+        },
+        FunctionExpr(_, func_name, ref args) => {
+            let llfunc = get_proc_pointer(ec, func_name);  
+            let llargs = do args.map |arg| { emit_expr(ec, arg) };
+            do noname |name| {
+                unsafe {
+                    llvm::LLVMBuildCall(ec.llbuilder, llfunc, 
+                                        vec::raw::to_ptr(llargs),
+                                        llargs.len() as u32, name)
+                }
+            }
         },
         BinaryArithExpr(_, op, ref e1, ref e2) => unsafe {
             let lle1 = emit_expr(ec, *e1);
@@ -462,10 +515,10 @@ fn translate_type(ty: Type) -> TypeRef {
     }
 }
 
-fn translate_mdtype(ty: Type) -> TypeRef {
+fn translate_mdtype(ec: &EmitterContext, ty: Type) -> ValueRef {
     match ty {
-        IntegerType => type_i32(),
-        BooleanType => type_i1()
+        IntegerType => ec.mdinteger,
+        BooleanType => ec.mdboolean
     }
 }
 
@@ -473,6 +526,13 @@ fn get_var_pointer(ec: &EmitterContext, var_name: @str) -> ValueRef {
     match ec.var_map.find(&var_name) {
         Some(llvar) => *llvar,
         None => fail!(~"No variable pointer found.")
+    }
+}
+
+fn get_proc_pointer(ec: &EmitterContext, proc_name: @str) -> ValueRef {
+    match ec.proc_map.find(&proc_name) {
+        Some(llproc) => *llproc,
+        None => fail!(~"No procedure pointer found.")
     }
 }
 
@@ -492,10 +552,20 @@ fn type_i32() -> TypeRef {
     unsafe { llvm::LLVMInt32Type() }
 }
 
+fn type_i64() -> TypeRef {
+    unsafe { llvm::LLVMInt64Type() }
+}
+
 fn type_fn(ret_ty: TypeRef, arg_tys: &[TypeRef]) -> TypeRef {
     unsafe {
         llvm::LLVMFunctionType(ret_ty, vec::raw::to_ptr(arg_tys),
                                arg_tys.len() as c_uint, rustllvm::False)
+    }
+}
+
+fn const_zero(llty: TypeRef) -> ValueRef {
+    unsafe {
+        llvm::LLVMConstNull(llty)
     }
 }
 
@@ -512,6 +582,12 @@ fn const_i32(val: i32) -> ValueRef {
     }
 }
 
+fn const_i64(val: i64) -> ValueRef {
+    unsafe {
+        llvm::LLVMConstInt(type_i64(), val as c_ulonglong, rustllvm::False)
+    }
+}
+
 fn mdstr(s: &str) -> ValueRef {
     do str::as_c_str(s) |buf| {
         unsafe {
@@ -522,7 +598,7 @@ fn mdstr(s: &str) -> ValueRef {
 
 fn mdnull() -> ValueRef {
     unsafe {
-        cast::reinterpret_cast(&ptr::null::<ValueRef>())
+        cast::transmute(ptr::null::<ValueRef>())
     }
 }
 

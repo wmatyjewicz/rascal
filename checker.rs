@@ -5,7 +5,7 @@
 
 // Semantic checker
 
-use core::hashmap::linear::LinearMap;
+use core::hashmap::HashMap;
 
 use util;
 use lexer::Position;
@@ -18,15 +18,15 @@ enum DefType {
 
 struct CheckerContext {
     src_path: @Path,
-    def_map: LinearMap<@str, DefType>
+    def_map: HashMap<@str, DefType>
 }
 
-type LocalVarMap = LinearMap<@str, Type>;
+type LocalVarMap = HashMap<@str, Type>;
 
 pub fn check_program(program: &Program) {
     let mut cc = CheckerContext {
         src_path: program.src_path,
-        def_map: LinearMap::new()
+        def_map: HashMap::new()
     };
 
     for program.defs.each |def| {
@@ -39,7 +39,7 @@ pub fn check_program(program: &Program) {
                 check_global_ident(&cc, proc.pos, proc.name);
 
                 let mut arg_tys = ~[];
-                let mut lvm : LocalVarMap = LinearMap::new();
+                let mut lvm : LocalVarMap = HashMap::new();
                 match proc.ret_ty {
                     Some(ty) => { lvm.insert(proc.name, ty); },
                     None => {}
@@ -67,7 +67,7 @@ pub fn check_program(program: &Program) {
         }
     }
         
-    let empty_lvm = LinearMap::new();
+    let empty_lvm = HashMap::new();
     for program.block.stmts.each |stmt| {
         check_stmt(&cc, &empty_lvm, stmt);
     }

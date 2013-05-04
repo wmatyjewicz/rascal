@@ -39,7 +39,7 @@ pub fn from_file(src_path: @Path) -> Lexer {
 }
 
 fn new_lexer(src_path: @Path, src: ~str) -> Lexer {
-    assert!(str::is_ascii(src));
+    assert!(src.is_ascii());
 
     let mut lexer = Lexer {
         src_path: src_path,
@@ -113,7 +113,8 @@ impl Lexer {
             while !self.is_end() && is_ident_cont(self.peek_char()) {
                 self.consume_char();
             }
-            let ident = self.src.slice(self.token_offset, self.offset).to_lower();
+            let ident = self.src.slice(self.token_offset, self.offset)
+                .to_ascii().to_lower().to_str_ascii();
             Some(self.token_from_ident_str(ident))
         }
         else {

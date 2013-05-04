@@ -9,5 +9,6 @@ end
 var x : integer;
 
 begin
+   BoolToInt(False);
    x := BoolToInt(True) + 2
 end.

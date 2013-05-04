@@ -6,13 +6,13 @@
 use lexer;
 use parser;
 use checker;
-//use emitter;
+use emitter;
 
 fn compile(src_path: @Path, bc_path: &Path) {
     let mut lexer = lexer::from_file(src_path);
     let program = parser::parse_program(&mut lexer);
     checker::check_program(&program);
-//    emitter::emit_program(bc_path, &program);
+    emitter::emit_program(bc_path, &program);
 }
 
 fn main() {

@@ -5,7 +5,7 @@
 
 // Tokens
 
-use core::hashmap::linear::LinearMap;
+use core::hashmap::HashMap;
 
 #[deriving(Eq)]
 pub enum Token {
@@ -62,10 +62,10 @@ pub enum Token {
     INT_LITERAL(i32)
 }
 
-pub type KeywordMap = LinearMap<~str, Token>;
+pub type KeywordMap = HashMap<~str, Token>;
 
 pub fn get_keyword_map() -> KeywordMap {
-    let mut kw_map = LinearMap::new();
+    let mut kw_map = HashMap::new();
     kw_map.insert(~"and", KW_AND);
     kw_map.insert(~"begin", KW_BEGIN);
     kw_map.insert(~"boolean", KW_BOOLEAN);
