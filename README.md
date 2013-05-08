@@ -1,6 +1,3 @@
-*Generation of debug information is in progress (there is initial support
-for line information and all language elements except local variables).*
-
 # Rascal
 
 Rascal is an LLVM-based compiler written in Rust for a small subset of Pascal

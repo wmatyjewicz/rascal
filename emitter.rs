@@ -28,6 +28,7 @@ priv struct EmitterContext {
     var_map: VarMap,
     proc_map: ProcMap,
 
+    dbg_declare: ValueRef,
     dbg_empty: ValueRef,
     dbg_integer: ValueRef,
     dbg_boolean: ValueRef,
@@ -42,6 +43,17 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
     let dirname = program.src_path.dirname();
     let filename = program.src_path.filename().get();
 
+    let module = create_module(filename);
+    let builder = unsafe { llvm::LLVMCreateBuilder() };
+
+    // Declare llvm.dbg.declare intrinic
+    let dbg_declare_ty = type_fn(type_void(), [type_metadata(), ..2]);
+    let dbg_declare = do str::as_c_str("llvm.dbg.declare") |name| {
+        unsafe {
+            llvm::LLVMAddFunction(module, name, dbg_declare_ty)
+        }
+    };
+    
     // Prepare debug info empty node for (many) future uses
     let dbg_empty = md_node([const_i32(0)]);
 
@@ -54,9 +66,6 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
     // Generate debug info for the compiled file.
     let dbg_file = mk_file_dbg_node(dirname, filename);
 
-    let module = create_module(filename);
-    let builder = unsafe { llvm::LLVMCreateBuilder() };
-
     let mut ec = EmitterContext {
         module: module,
         builder: builder,
@@ -64,6 +73,7 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
         var_map: HashMap::new(),
         proc_map: HashMap::new(),
 
+        dbg_declare: dbg_declare,
         dbg_empty: dbg_empty,
         dbg_integer: dbg_integer,
         dbg_boolean: dbg_boolean,
@@ -89,7 +99,7 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
         args: ~[],
         ret_ty: Some(IntegerType),
         vars: ~[],
-        block: copy program.block // TODO: think of something better
+        block: copy program.block // TODO: Can we do something better than copy here?
     };
     emit_proc(&mut ec, &main_proc);
 
@@ -155,8 +165,7 @@ fn emit_proc(ec: &mut EmitterContext, proc: &Proc) {
     // Create debug information for this procedure.
     let dbg_subprog_ty = mk_subroutine_type_dbg_node(dbg_ret_ty, dbg_arg_tys);
     let dbg_subprog = mk_subprogram_dbg_node(ec.dbg_empty, ec.dbg_file,proc.name,
-                                             dbg_subprog_ty, func, proc.pos.line,
-                                             proc.block.pos.line); // TODO: check last arg;
+                                             dbg_subprog_ty, func, proc.pos.line);
     ec.dbg_subprogs.push(dbg_subprog);
 
     let mut lvm = HashMap::new(); // Local variable map
@@ -173,23 +182,26 @@ fn emit_proc(ec: &mut EmitterContext, proc: &Proc) {
 
     // Optionally, create a zeroed local variable to hold the function result.
     let ret_var = do proc.ret_ty.map |ty| {
-        emit_local_var(ec, &mut lvm, proc.name, *ty, const_zero(ret_ty))
+        emit_local_var(ec, &mut lvm, proc.name, *ty, const_zero(ret_ty),
+                       dbg_subprog, 0, proc.pos)
     };
         
     // Create local variables for procedure arguments.
-    let mut i = 0;
+    let mut i = 0u;
     for proc.args.each |arg| {
         let arg_val = unsafe {
             llvm::LLVMGetParam(func, i as c_uint)
         };
-        emit_local_var(ec, &mut lvm, arg.name, arg.ty, arg_val);
-        i += 1;
+        emit_local_var(ec, &mut lvm, arg.name, arg.ty, arg_val,
+                       dbg_subprog, i + 1u, arg.pos); 
+        i += 1u;
     }
 
     // Create local variables for (Pascal) local variables.
     for proc.vars.each |var| {
         let lty = translate_type(var.ty);
-        emit_local_var(ec, &mut lvm, var.name, var.ty, const_zero(lty));
+        emit_local_var(ec, &mut lvm, var.name, var.ty, const_zero(lty),
+                       dbg_subprog, 0, var.pos);
     }
     
     // Emit LLVM IR for all statements.
@@ -213,20 +225,35 @@ fn emit_proc(ec: &mut EmitterContext, proc: &Proc) {
     }
 }
 
+// arg_no == 0 means it is a local variable (not an argument)
 fn emit_local_var(ec: &EmitterContext, lvm: &mut VarMap, name: @str, ty: Type,
-                  init_val: ValueRef) -> ValueRef {
+                  init_val: ValueRef, dbg_subprog: ValueRef,
+                  arg_no: uint, pos: Position) -> ValueRef {
+    // Emit variable.
     let lty = translate_type(ty);
-    let var = unsafe {
-        let var = str::as_c_str(name, |name| {
+    let var = str::as_c_str(name, |name| {
+        unsafe {
             llvm::LLVMBuildAlloca(ec.builder, lty, name)
-        });
+        }
+    });
+    unsafe {
         llvm::LLVMBuildStore(ec.builder, init_val, var);
-        var
-// TODO: debug info
-//        md_node([var])
-//        do noname |name| {
-//            llvm:LLVMBuildCall(ec.builder, ec.declare_fn
+    }
+
+    // Create debug information for the variable.
+    let dbg_ty = get_type_dbg_node(ec, ty);
+    let dbg_var = mk_local_var_dbg_node(dbg_subprog, ec.dbg_file, name, dbg_ty,
+                                        arg_no, pos.line);
+    let declare_args = [md_node([var]), dbg_var];
+    set_debug_loc(ec, pos, dbg_subprog);
+    do noname |name| {
+        unsafe {
+            llvm::LLVMBuildCall(ec.builder, ec.dbg_declare, vec::raw::to_ptr(declare_args),
+                                declare_args.len() as u32, name)
+        }
     };
+    unset_debug_loc(ec);
+    
     lvm.insert(name, var);
     var
 }
@@ -491,12 +518,15 @@ static BasicTypeTag: i32 = 36;
 static GlobalVarTag: i32 = 52;
 static SubroutineTypeTag: i32 = 21;
 static SubprogramTag: i32 = 46;
+static AutoVarTag: i32 = 256;
+static ArgVarTag: i32 = 257;
 
 static DW_ATE_boolean: i32 = 2;
 static DW_ATE_signed: i32 = 5;
 
 // --== Functions to create debug info nodes ==--
 
+//TODO: node caching?
 fn mk_file_dbg_node(dirname: &str, filename: &str) -> ValueRef {
     md_node([vtag(FileTag),
              md_node([md_str(filename), md_str(dirname)])])
@@ -569,10 +599,9 @@ fn mk_global_var_dbg_node(dbg_file: ValueRef, name: &str, dbg_ty: ValueRef,
              md_null()])
 }
 
-// TODO: scope_line? what value to set?
 fn mk_subprogram_dbg_node(dbg_empty: ValueRef, dbg_file: ValueRef, name: &str,
                           dbg_ty: ValueRef, subprog: ValueRef,
-                          line: uint, scope_line: uint) -> ValueRef {
+                          line: uint) -> ValueRef {
     md_node([vtag(SubprogramTag),
              const_i32(0),      // unused
              dbg_file ,         // context
@@ -587,13 +616,26 @@ fn mk_subprogram_dbg_node(dbg_empty: ValueRef, dbg_file: ValueRef, name: &str,
              const_i32(0),      // virtuality
              const_i32(0),      // virtual index
              md_null(),         // type containing ptr to vtable
-             const_i32(256),    // flags [TODO: CHECK]
+             const_i32(256),    // flags
              const_i1(false),   // optimized
              subprog,
              md_null(),         // template parameters
              md_null(),         // ?
              dbg_empty ,        // variables
-             const_i32(scope_line as i32)])
+             const_i32(line as i32)])
+}
+
+// arg_no == 0 means it is a local variable (not an argument)
+fn mk_local_var_dbg_node(dbg_context: ValueRef, dbg_file: ValueRef, name: &str,
+                         dbg_ty: ValueRef, arg_no: uint, line: uint) -> ValueRef {
+    md_node([vtag(if arg_no == 0 { AutoVarTag } else { ArgVarTag }),
+             dbg_context,
+             md_str(name),
+             dbg_file,
+             const_i32(((arg_no << 24) | line) as i32),
+             dbg_ty,
+             const_i32(0),    // flags
+             md_null()])      // inline location
 }
 
 // --== Various LLVM helpers ==--
@@ -655,6 +697,10 @@ fn type_i32() -> TypeRef {
 
 fn type_i64() -> TypeRef {
     unsafe { llvm::LLVMInt64Type() }
+}
+
+fn type_metadata() -> TypeRef {
+    unsafe { llvm::LLVMMetadataType() }
 }
 
 fn type_fn(ret_ty: TypeRef, arg_tys: &[TypeRef]) -> TypeRef {
