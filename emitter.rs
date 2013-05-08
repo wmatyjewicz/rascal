@@ -16,36 +16,17 @@ use util;
 use lexer::Position;
 use ast::*;
 
-// --== Hard-coded data layout and target specification for LLVM ==--
-static data_layout_str: &'static str = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64-S128";
-static target_triple_str: &'static str = "x86_64-unknown-linux-gnu";
-
-// --== DWARF tags ==--
-static LLVMDebugVersion: i32 = (12 << 16);
-
-fn vtag(tag: i32) -> ValueRef {
-    const_i32(tag | LLVMDebugVersion)
-}
-
-static CompileUnitTag: i32 = 17;
-static FileTag: i32 = 41;
-static BasicTypeTag: i32 = 36;
-static GlobalVarTag: i32 = 52;
-static SubroutineTypeTag: i32 = 21;
-static SubprogramTag: i32 = 46;
-
-static DW_ATE_boolean: i32 = 2;
-static DW_ATE_signed: i32 = 5;
-
 // --== The main part ==--
-type ObjectMap = HashMap<@str, ValueRef>;
+
+type ProcMap = HashMap<@str, ValueRef>;
+type VarMap = HashMap<@str, ValueRef>;
 
 priv struct EmitterContext {
     module: ModuleRef,
     builder: BuilderRef,
 
-    var_map: ObjectMap,
-    proc_map: ObjectMap,
+    var_map: VarMap,
+    proc_map: ProcMap,
 
     dbg_empty: ValueRef,
     dbg_integer: ValueRef,
@@ -65,9 +46,10 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
     let dbg_empty = md_node([const_i32(0)]);
 
     // Prepare debug info for basic types
-    let dbg_integer = mk_basic_type_dbg_node("integer", 32, 32, DW_ATE_signed);
-    let dbg_boolean = mk_basic_type_dbg_node("boolean", 1, 1, DW_ATE_boolean);
-    // TODO: boolean should be 8-bit
+    let dbg_integer = mk_basic_type_dbg_node("integer", integer_width, integer_width,
+                                             DW_ATE_signed);
+    let dbg_boolean = mk_basic_type_dbg_node("boolean", boolean_width, boolean_width,
+                                             DW_ATE_boolean);
     
     // Generate debug info for the compiled file.
     let dbg_file = mk_file_dbg_node(dirname, filename);
@@ -210,7 +192,6 @@ fn emit_proc(ec: &mut EmitterContext, proc: &Proc) {
         emit_local_var(ec, &mut lvm, var.name, var.ty, const_zero(lty));
     }
     
-    // TODO: scope node?
     // Emit LLVM IR for all statements.
     for proc.block.stmts.each |stmt| {
         emit_stmt(ec, &lvm, stmt, dbg_subprog);
@@ -232,7 +213,7 @@ fn emit_proc(ec: &mut EmitterContext, proc: &Proc) {
     }
 }
 
-fn emit_local_var(ec: &EmitterContext, lvm: &mut ObjectMap, name: @str, ty: Type,
+fn emit_local_var(ec: &EmitterContext, lvm: &mut VarMap, name: @str, ty: Type,
                   init_val: ValueRef) -> ValueRef {
     let lty = translate_type(ty);
     let var = unsafe {
@@ -250,20 +231,19 @@ fn emit_local_var(ec: &EmitterContext, lvm: &mut ObjectMap, name: @str, ty: Type
     var
 }
 
-// TODO: scope_node?
-fn emit_stmt(ec: &EmitterContext, lvm: &ObjectMap, stmt: &Stmt, scope_node: ValueRef) {
+fn emit_stmt(ec: &EmitterContext, lvm: &VarMap, stmt: &Stmt, dbg_scope: ValueRef) {
     match *stmt {
         AssignmentStmt(pos, var_name, ref expr) => {
-            set_debug_loc(ec, pos, scope_node);
-
+            set_debug_loc(ec, pos, dbg_scope);
+            
             let var = get_var_pointer(ec, lvm, var_name);
             let val = emit_expr(ec, lvm, *expr);
             unsafe {
-                llvm::LLVMBuildStore(ec.builder, val, var)
-            };
+                llvm::LLVMBuildStore(ec.builder, val, var);
+            }
         },
         CallStmt(pos, proc_name, ref args) => {
-            set_debug_loc(ec, pos, scope_node);
+            set_debug_loc(ec, pos, dbg_scope);
 
             let proc = get_proc_pointer(ec, proc_name);
             
@@ -278,9 +258,12 @@ fn emit_stmt(ec: &EmitterContext, lvm: &ObjectMap, stmt: &Stmt, scope_node: Valu
             };
         },
         IfStmt(pos, ref cond, ref then_stmt, ref opt_else_stmt) => unsafe {
-            set_debug_loc(ec, pos, scope_node);
+            set_debug_loc(ec, pos, dbg_scope);
 
             let cond_val = emit_expr(ec, lvm, *cond);
+            let cond_val = do noname |name| {
+                llvm::LLVMBuildTrunc(ec.builder, cond_val, type_i1(), name)
+            };
 
             let cond_bb = llvm::LLVMGetInsertBlock(ec.builder);
             let func = llvm::LLVMGetBasicBlockParent(cond_bb);
@@ -301,13 +284,13 @@ fn emit_stmt(ec: &EmitterContext, lvm: &ObjectMap, stmt: &Stmt, scope_node: Valu
             llvm::LLVMBuildCondBr(ec.builder, cond_val, then_bb, else_bb);
 
             llvm::LLVMPositionBuilderAtEnd(ec.builder, then_bb);
-            emit_stmt(ec, lvm, *then_stmt, scope_node);
+            emit_stmt(ec, lvm, *then_stmt, dbg_scope);
             llvm::LLVMBuildBr(ec.builder, end_bb);
 
             match *opt_else_stmt {
                 Some(ref else_stmt) => {
                     llvm::LLVMPositionBuilderAtEnd(ec.builder, else_bb);
-                    emit_stmt(ec, lvm, *else_stmt, scope_node);
+                    emit_stmt(ec, lvm, *else_stmt, dbg_scope);
                     llvm::LLVMBuildBr(ec.builder, end_bb);
                 },
                 None => {}
@@ -317,69 +300,79 @@ fn emit_stmt(ec: &EmitterContext, lvm: &ObjectMap, stmt: &Stmt, scope_node: Valu
         },
         BlockStmt(_, ref block) => {
             for block.stmts.each |stmt| {
-                emit_stmt(ec, lvm, stmt, scope_node);
+                emit_stmt(ec, lvm, stmt, dbg_scope);
             }
         }
     }
 }
 
-fn emit_expr(ec: &EmitterContext, lvm: &ObjectMap, expr: &Expr) -> ValueRef {
+fn emit_expr(ec: &EmitterContext, lvm: &VarMap, expr: &Expr) -> ValueRef {
     match *expr {
-        IntLiteralExpr(_, num) => const_i32(num),
-        BooleanLiteralExpr(_, b) => const_bool(b),
-        VarValExpr(_, var_name) => unsafe {
-            let llvar = get_var_pointer(ec, lvm, var_name);
-            do noname |name| { llvm::LLVMBuildLoad(ec.builder, llvar, name) }
+        IntLiteralExpr(_, num) => const_integer(num),
+        BooleanLiteralExpr(_, b) => const_boolean(b),
+        VarValExpr(_, var_name) => {
+            let var = get_var_pointer(ec, lvm, var_name);
+            unsafe {
+                do noname |name| { llvm::LLVMBuildLoad(ec.builder, var, name) }
+            }
         },
         FunctionExpr(_, func_name, ref args) => {
-            let llfunc = get_proc_pointer(ec, func_name);  
-            let llargs = do args.map |arg| { emit_expr(ec, lvm, arg) };
+            let func = get_proc_pointer(ec, func_name);  
+            let largs = do args.map |arg| { emit_expr(ec, lvm, arg) };
             do noname |name| {
                 unsafe {
-                    llvm::LLVMBuildCall(ec.builder, llfunc, 
-                                        vec::raw::to_ptr(llargs),
-                                        llargs.len() as u32, name)
+                    llvm::LLVMBuildCall(ec.builder, func, 
+                                        vec::raw::to_ptr(largs),
+                                        args.len() as u32, name)
                 }
             }
         },
-        BinaryArithExpr(_, op, ref e1, ref e2) => unsafe {
-            let lle1 = emit_expr(ec, lvm, *e1);
-            let lle2 = emit_expr(ec, lvm, *e2);
-            do noname |name| {
-                match op {
-                    AddOp => llvm::LLVMBuildAdd(ec.builder, lle1, lle2, name),
-                    SubOp => llvm::LLVMBuildSub(ec.builder, lle1, lle2, name),
-                    MulOp => llvm::LLVMBuildMul(ec.builder, lle1, lle2, name),
-                    DivOp => llvm::LLVMBuildSDiv(ec.builder, lle1, lle2, name),
-                    ModOp => llvm::LLVMBuildSRem(ec.builder, lle1, lle2, name)
+        BinaryArithExpr(_, op, ref e1, ref e2) => {
+            let le1 = emit_expr(ec, lvm, *e1);
+            let le2 = emit_expr(ec, lvm, *e2);
+            unsafe {
+                do noname |name| {
+                    match op {
+                        AddOp => llvm::LLVMBuildAdd(ec.builder, le1, le2, name),
+                        SubOp => llvm::LLVMBuildSub(ec.builder, le1, le2, name),
+                        MulOp => llvm::LLVMBuildMul(ec.builder, le1, le2, name),
+                        DivOp => llvm::LLVMBuildSDiv(ec.builder, le1, le2, name),
+                        ModOp => llvm::LLVMBuildSRem(ec.builder, le1, le2, name)
+                    }
                 }
             }
         },
-        UnaryArithExpr(_, op, ref e) => unsafe {
-            let lle = emit_expr(ec, lvm, *e);
+        UnaryArithExpr(_, op, ref e) => {
+            let le = emit_expr(ec, lvm, *e);
             match op {
-                PlusOp => lle,
+                PlusOp => le,
                 MinusOp => do noname |name| {
-                    llvm::LLVMBuildNeg(ec.builder, lle, name)
+                    unsafe {
+                        llvm::LLVMBuildNeg(ec.builder, le, name)
+                    }
                 }
             }
         },
-        BinaryLogicalExpr(_, op, ref e1, ref e2) => unsafe {
-            let lle1 = emit_expr(ec, lvm, *e1);
-            let lle2 = emit_expr(ec, lvm, *e2);
-            do noname |name| {
-                match op {
-                    AndOp => llvm::LLVMBuildAnd(ec.builder, lle1, lle2, name),
-                    OrOp => llvm::LLVMBuildOr(ec.builder, lle1, lle2, name)
+        BinaryLogicalExpr(_, op, ref e1, ref e2) => {
+            let le1 = emit_expr(ec, lvm, *e1);
+            let le2 = emit_expr(ec, lvm, *e2);
+            unsafe {
+                do noname |name| {
+                    match op {
+                        AndOp => llvm::LLVMBuildAnd(ec.builder, le1, le2, name),
+                        OrOp => llvm::LLVMBuildOr(ec.builder, le1, le2, name)
+                    }
                 }
             }
         },
-        NegationExpr(_, ref e) => unsafe {
-            let lle = emit_expr(ec, lvm, *e);
-            do noname |name| { llvm::LLVMBuildNot(ec.builder, lle, name) }
+        NegationExpr(_, ref e) => {
+            let le = emit_expr(ec, lvm, *e);
+            unsafe {
+                do noname |name| { llvm::LLVMBuildNot(ec.builder, le, name) }
+            }
         },
         ComparisonExpr(_, op, ref e1, ref e2) => {
-            let llop = match op {
+            let lop = match op {
                 EqOp => rustllvm::IntEQ,
                 NeOp => rustllvm::IntNE,
                 LtOp => rustllvm::IntSLT,
@@ -387,11 +380,14 @@ fn emit_expr(ec: &EmitterContext, lvm: &ObjectMap, expr: &Expr) -> ValueRef {
                 LeOp => rustllvm::IntSLE,
                 GeOp => rustllvm::IntSGE,
             } as c_uint;
+            let le1 = emit_expr(ec, lvm, *e1);
+            let le2 = emit_expr(ec, lvm, *e2);
             unsafe {
-                let lle1 = emit_expr(ec, lvm, *e1);
-                let lle2 = emit_expr(ec, lvm, *e2);
+                let cmp = do noname |name| {
+                    llvm::LLVMBuildICmp(ec.builder, lop, le1, le2, name)
+                };
                 do noname |name| {
-                    llvm::LLVMBuildICmp(ec.builder, llop, lle1, lle2, name)
+                    llvm::LLVMBuildZExt(ec.builder, cmp, boolean_repr_type(), name)
                 }
             }
         }
@@ -400,10 +396,10 @@ fn emit_expr(ec: &EmitterContext, lvm: &ObjectMap, expr: &Expr) -> ValueRef {
 
 // --== Debug location ==--
 
-fn set_debug_loc(ec: &EmitterContext, pos: Position, scope_node: ValueRef) {
+fn set_debug_loc(ec: &EmitterContext, pos: Position, dbg_scope: ValueRef) {
     let dbg_loc = md_node([const_i32(pos.line as i32),
                            const_i32(pos.col as i32),
-                           scope_node,
+                           dbg_scope,
                            md_null()]);
     unsafe {
         llvm::LLVMSetCurrentDebugLocation(ec.builder, dbg_loc);
@@ -416,12 +412,40 @@ fn unset_debug_loc(ec: &EmitterContext) {
     }
 }
 
-// --== Type translation ==--
+// --== Hard-coded data layout and target specification for LLVM ==--
+
+static data_layout_str: &'static str = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64-S128";
+static target_triple_str: &'static str = "x86_64-unknown-linux-gnu";
+
+// --== Type representation and translation ==--
+
+static integer_width : uint = 32;
+static boolean_width : uint = 8;
+
+#[inline(always)]
+fn integer_repr_type() -> TypeRef {
+    type_i32()
+}
+
+#[inline(always)]
+fn boolean_repr_type() -> TypeRef {
+    type_i8()
+}
+
+#[inline(always)]
+fn const_integer(val : i32) -> ValueRef {
+    const_i32(val)
+}
+
+#[inline(always)]
+fn const_boolean(b : bool) -> ValueRef {
+    const_i8(if b { 1i8 } else { 0i8 })
+}
 
 fn translate_type(ty: Type) -> TypeRef {
     match ty {
-        IntegerType => type_i32(),
-        BooleanType => type_i1()
+        IntegerType => integer_repr_type(),
+        BooleanType => boolean_repr_type()
     }
 }
 
@@ -434,7 +458,7 @@ fn get_type_dbg_node(ec: &EmitterContext, ty: Type) -> ValueRef {
 
 // --== ObjectMap helpers ==--
 
-fn get_var_pointer(ec: &EmitterContext, lvm: &ObjectMap, var_name: @str) -> ValueRef {
+fn get_var_pointer(ec: &EmitterContext, lvm: &VarMap, var_name: @str) -> ValueRef {
     match lvm.find(&var_name) {
         Some(var) => *var,
         None => {
@@ -453,6 +477,24 @@ fn get_proc_pointer(ec: &EmitterContext, proc_name: @str) -> ValueRef {
     }
 }
 
+// --== DWARF tags ==--
+
+static LLVMDebugVersion: i32 = (12 << 16);
+
+fn vtag(tag: i32) -> ValueRef {
+    const_i32(tag | LLVMDebugVersion)
+}
+
+static CompileUnitTag: i32 = 17;
+static FileTag: i32 = 41;
+static BasicTypeTag: i32 = 36;
+static GlobalVarTag: i32 = 52;
+static SubroutineTypeTag: i32 = 21;
+static SubprogramTag: i32 = 46;
+
+static DW_ATE_boolean: i32 = 2;
+static DW_ATE_signed: i32 = 5;
+
 // --== Functions to create debug info nodes ==--
 
 fn mk_file_dbg_node(dirname: &str, filename: &str) -> ValueRef {
@@ -467,7 +509,7 @@ fn mk_compile_unit_dbg_node(dbg_empty: ValueRef, dbg_file: ValueRef,
              const_i32(9),          // Pascal
              dbg_file,
              md_str("rascal"),      // producer
-             const_bool(false),     // optimized
+             const_i1(false),       // optimized
              md_str(""),            // flags
              const_i32(0),          // runtime version
              dbg_empty,             // enum types
@@ -521,8 +563,8 @@ fn mk_global_var_dbg_node(dbg_file: ValueRef, name: &str, dbg_ty: ValueRef,
              dbg_file,
              const_i32(line as i32),
              dbg_ty,
-             const_bool(true),  // static
-             const_bool(true),  // not extern
+             const_i1(true),   // static
+             const_i1(true),   // not extern
              var,
              md_null()])
 }
@@ -540,13 +582,13 @@ fn mk_subprogram_dbg_node(dbg_empty: ValueRef, dbg_file: ValueRef, name: &str,
              dbg_file,
              const_i32(line as i32),
              dbg_ty,
-             const_bool(false), // static
-             const_bool(true),  // not extern
+             const_i1(false),   // static
+             const_i1(true),    // not extern
              const_i32(0),      // virtuality
              const_i32(0),      // virtual index
              md_null(),         // type containing ptr to vtable
              const_i32(256),    // flags [TODO: CHECK]
-             const_bool(false), // optimized
+             const_i1(false),   // optimized
              subprog,
              md_null(),         // template parameters
              md_null(),         // ?
@@ -603,6 +645,10 @@ fn type_i1() -> TypeRef {
     unsafe { llvm::LLVMInt1Type() }
 }
 
+fn type_i8() -> TypeRef {
+    unsafe { llvm::LLVMInt8Type() }
+}
+
 fn type_i32() -> TypeRef {
     unsafe { llvm::LLVMInt32Type() }
 }
@@ -620,16 +666,22 @@ fn type_fn(ret_ty: TypeRef, arg_tys: &[TypeRef]) -> TypeRef {
 
 // --== LLVM constants ==--
 
-fn const_zero(llty: TypeRef) -> ValueRef {
+fn const_zero(ty: TypeRef) -> ValueRef {
     unsafe {
-        llvm::LLVMConstNull(llty)
+        llvm::LLVMConstNull(ty)
     }
 }
 
-fn const_bool(val: bool) -> ValueRef {
+fn const_i1(val: bool) -> ValueRef {
     let numval = if val { 1 } else { 0 };
     unsafe {
         llvm::LLVMConstInt(type_i1(), numval as c_ulonglong, rustllvm::False)
+    }
+}
+
+fn const_i8(val: i8) -> ValueRef {
+    unsafe {
+        llvm::LLVMConstInt(type_i8(), val as c_ulonglong, rustllvm::False)
     }
 }
 
