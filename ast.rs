@@ -24,6 +24,7 @@ pub struct Var {
     ty: Type
 }
 
+// TODO: Func is much better name than Proc
 pub struct Proc {
     pos: Position,
     name: @str,
