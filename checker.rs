@@ -75,11 +75,19 @@ pub fn check_program(program: &Program) {
 
 fn check_stmt(cc: &CheckerContext, lvm: &LocalVarMap, stmt: &Stmt) {
     match *stmt {
+        ReadLnStmt(pos, var_name) => {
+            if find_var_type(cc, lvm, pos, var_name) != IntegerType {
+                error_at_pos(cc, pos, "Type mismatch.");
+            }
+        },
+        WriteLnStmt(pos, ref expr) => {
+            let expr_ty = check_expr(cc, lvm, *expr);
+            if expr_ty != IntegerType {
+                error_at_pos(cc, pos, "Type mismatch.");
+            }
+        },
         AssignmentStmt(pos, var_name, ref expr) => {
-            let var_ty = match lvm.find(&var_name) {
-                Some(ty) => *ty,
-                None => find_global_var_type(cc, pos, var_name)
-            };
+            let var_ty = find_var_type(cc, lvm, pos, var_name);
             let expr_ty = check_expr(cc, lvm, *expr);
             if var_ty != expr_ty {
                 error_at_pos(cc, pos, "Type mismatch.");
@@ -113,10 +121,7 @@ fn check_expr(cc: &CheckerContext, lvm: &LocalVarMap, expr: &Expr) -> Type {
         IntLiteralExpr(*) => IntegerType,
         BooleanLiteralExpr(*) => BooleanType,
         VarValExpr(pos, var_name) => {
-            match lvm.find(&var_name) {
-                Some(ty) => *ty,
-                None => find_global_var_type(cc, pos, var_name)
-            }
+            find_var_type(cc, lvm, pos, var_name)
         },
         FunctionExpr(pos, func_name, ref args) => {
             let (arg_formal_tys, ret_ty) = find_func_types(cc, pos, func_name);
@@ -172,10 +177,15 @@ fn check_operand(cc: &CheckerContext, lvm: &LocalVarMap, pos: Position,
     }
 }
 
-fn find_global_var_type(cc: &CheckerContext, pos: Position, var_name: @str) -> Type {
-    match cc.def_map.find(&var_name) {
-        Some(&VarDefType(ty)) => ty,
-        _ => error_at_pos(cc, pos, "Unknown variable identifier.")
+fn find_var_type(cc: &CheckerContext, lvm: &LocalVarMap, pos: Position, name: @str) -> Type {
+    match lvm.find(&name) {
+        Some(ty) => *ty,
+        None => {
+            match cc.def_map.find(&name) {
+                Some(&VarDefType(ty)) => ty,
+                _ => error_at_pos(cc, pos, "Unknown variable identifier.")
+            }
+        }
     }
 }
 

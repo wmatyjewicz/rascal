@@ -40,6 +40,8 @@ pub struct Block {
 }
 
 pub enum Stmt {
+    ReadLnStmt(Position, @str),
+    WriteLnStmt(Position, ~Expr),
     AssignmentStmt(Position, @str, ~Expr),
     CallStmt(Position, @str, ~[Expr]),
     IfStmt(Position, ~Expr, ~Stmt, Option<~Stmt>),

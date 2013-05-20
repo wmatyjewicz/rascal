@@ -51,9 +51,11 @@ pub enum Token {
     KW_NOT,
     KW_OR,
     KW_PROCEDURE,
+    KW_READLN,
     KW_THEN,
     KW_TRUE,
     KW_VAR,
+    KW_WRITELN,
     
     // Identifier
     IDENT(@str),
@@ -80,8 +82,10 @@ pub fn get_keyword_map() -> KeywordMap {
     kw_map.insert(~"not", KW_NOT);
     kw_map.insert(~"or", KW_OR);
     kw_map.insert(~"procedure", KW_PROCEDURE);
+    kw_map.insert(~"readln", KW_READLN);
     kw_map.insert(~"then", KW_THEN);
     kw_map.insert(~"true", KW_TRUE);
     kw_map.insert(~"var", KW_VAR);
+    kw_map.insert(~"writeln", KW_WRITELN);
     kw_map
 }

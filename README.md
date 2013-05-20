@@ -11,7 +11,7 @@ Currently Rascal works only on Linux x86_64.
 
 Requirements:
 
-* Rust built from the HEAD of the git repository, in particular:
+* Rust built from the HEAD of the master branch, in particular:
   * the compiler: `rustc`
   * LLVM bindings module: `$RUST_DIR/src/librustc/lib/llvm.rs`
   * LLVM library for Rust:
@@ -41,7 +41,11 @@ Steps:
 2. Run `rascal <file>.pas`. It will produce `<file>.bc` containing
    LLVM bitcode with full debug information.
 3. Run `llc <file>.bc`. It will produce `<file>.s` with the assembly code.
-4. Run `gcc <file>.s` (alternatively clang may be used) to generate
+4. Run `gcc -g <file>.s runtime.c` (alternatively clang may be used) to generate
+   the executable with full debug information.
+   * `runtime.c` is the "standard library" of Rascal.
+
+The steps 2-4 can be executed at once using the `compile.sh` script.
 
 ## Notes on debugging executables produced by Rascal
 

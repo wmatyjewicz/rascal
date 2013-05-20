@@ -7,7 +7,7 @@ begin
 end
 
 function Add(a : integer, b : integer) : integer
-var sum :  integer;
+var sum : integer;
 begin
    sum := a + b;
    Add := sum
@@ -19,10 +19,12 @@ begin
 end
 
 var x : integer;
+    y : integer;
     b : boolean;
 
 begin
-   BoolToInt(False);
-   x := BoolToInt(True) + 2;
-   b := Less(5, Add(x, 5))
+   ReadLn(x);
+   ReadLn(y);
+   WriteLn(BoolToInt(Less(x, y)));
+   WriteLn(Add(x, y))
 end.

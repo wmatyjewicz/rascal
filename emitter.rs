@@ -28,6 +28,9 @@ priv struct EmitterContext {
     var_map: VarMap,
     proc_map: ProcMap,
 
+    rt_readln: ValueRef,
+    rt_writeln: ValueRef,
+
     dbg_declare: ValueRef,
     dbg_empty: ValueRef,
     dbg_integer: ValueRef,
@@ -45,6 +48,20 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
 
     let module = create_module(filename);
     let builder = unsafe { llvm::LLVMCreateBuilder() };
+
+    // Declare runtime functions
+    let rt_readln_ty = type_fn(integer_repr_type(), []);
+    let rt_readln = do str::as_c_str("readln") |name| {
+        unsafe {
+            llvm::LLVMAddFunction(module, name, rt_readln_ty)
+        }
+    };
+    let rt_writeln_ty = type_fn(type_void(), [integer_repr_type()]);
+    let rt_writeln = do str::as_c_str("writeln") |name| {
+        unsafe {
+            llvm::LLVMAddFunction(module, name, rt_writeln_ty)
+        }
+    };
 
     // Declare llvm.dbg.declare intrinic
     let dbg_declare_ty = type_fn(type_void(), [type_metadata(), ..2]);
@@ -72,6 +89,9 @@ pub fn emit_program(bc_path: &Path, program: &Program) {
     
         var_map: HashMap::new(),
         proc_map: HashMap::new(),
+
+        rt_readln: rt_readln,
+        rt_writeln: rt_writeln,
 
         dbg_declare: dbg_declare,
         dbg_empty: dbg_empty,
@@ -260,6 +280,29 @@ fn emit_local_var(ec: &EmitterContext, lvm: &mut VarMap, name: @str, ty: Type,
 
 fn emit_stmt(ec: &EmitterContext, lvm: &VarMap, stmt: &Stmt, dbg_scope: ValueRef) {
     match *stmt {
+        ReadLnStmt(pos, var_name) => {
+            set_debug_loc(ec, pos, dbg_scope);
+            
+            let var = get_var_pointer(ec, lvm, var_name);
+            unsafe {
+                let val = do noname |name| {
+                    llvm::LLVMBuildCall(ec.builder, ec.rt_readln,
+                                        vec::raw::to_ptr([]), 0u32, name)
+                };
+                llvm::LLVMBuildStore(ec.builder, val, var);
+            }
+        },
+        WriteLnStmt(pos, ref expr) => {
+            set_debug_loc(ec, pos, dbg_scope);
+
+            let val = emit_expr(ec, lvm, *expr);
+            do noname |name| {
+                unsafe {
+                    llvm::LLVMBuildCall(ec.builder, ec.rt_writeln,
+                                        vec::raw::to_ptr([val]), 1u32, name)
+                }
+            };
+        },
         AssignmentStmt(pos, var_name, ref expr) => {
             set_debug_loc(ec, pos, dbg_scope);
             

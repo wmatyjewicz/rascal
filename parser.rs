@@ -124,6 +124,20 @@ fn parse_block(lexer: &mut Lexer) -> Block {
 fn parse_stmt(lexer: &mut Lexer) -> Stmt {
     let pos = lexer.token_pos;
     match lexer.token {
+        KW_READLN => {
+            lexer.consume();
+            parse_token(lexer, LPAREN);
+            let s = parse_ident(lexer);
+            parse_token(lexer, RPAREN);
+            ReadLnStmt(pos, s)
+        },
+        KW_WRITELN => {
+            lexer.consume();
+            parse_token(lexer, LPAREN);
+            let val = parse_expr(lexer);
+            parse_token(lexer, RPAREN);
+            WriteLnStmt(pos, ~val)
+        },
         IDENT(s) => {
             lexer.consume();
             if lexer.token == LPAREN {
