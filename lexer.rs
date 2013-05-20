@@ -129,8 +129,8 @@ impl Lexer {
             while !self.is_end() && is_digit(self.peek_char()) {
                 self.consume_char();
             }
-            // FIXME: Why is str::from_slice necessary to make borrowck quiet?
-            let neg = ~"-" + str::from_slice(self.src.slice(self.token_offset, self.offset));
+            // FIXME: Why is str::to_owned necessary to make borrowck quiet?
+            let neg = ~"-" + str::to_owned(self.src.slice(self.token_offset, self.offset));
             let num = match i32::from_str(neg) {
                 Some(i) => -i,
                 None => self.error_at_peek("Integer literal out of bounds")

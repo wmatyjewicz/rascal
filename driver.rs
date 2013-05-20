@@ -15,6 +15,7 @@ fn compile(src_path: @Path, bc_path: &Path) {
     emitter::emit_program(bc_path, &program);
 }
 
+#[main]
 fn main() {
     let args = os::args();
     if args.len() != 2 {
