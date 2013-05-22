@@ -108,6 +108,13 @@ fn check_stmt(cc: &CheckerContext, lvm: &LocalVarMap, stmt: &Stmt) {
                 None => {}
             }
         },
+        WhileStmt(pos, ref cond, ref do_stmt) => {
+            let cond_ty = check_expr(cc, lvm, *cond);
+            if cond_ty != BooleanType {
+                error_at_pos(cc, pos, "Condition type mismatch.");
+            }
+            check_stmt(cc, lvm, *do_stmt);
+        },
         BlockStmt(_, ref block) => {
             for block.stmts.each |stmt| {
                 check_stmt(cc, lvm, stmt);

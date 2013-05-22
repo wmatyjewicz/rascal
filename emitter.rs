@@ -327,6 +327,37 @@ fn emit_stmt(ec: &EmitterContext, lvm: &VarMap, stmt: &Stmt, dbg_scope: ValueRef
                 }
             };
         },
+        WhileStmt(pos, ref cond, ref do_stmt) => unsafe {
+            set_debug_loc(ec, pos, dbg_scope);
+
+            let cur_bb = llvm::LLVMGetInsertBlock(ec.builder);
+            let func = llvm::LLVMGetBasicBlockParent(cur_bb);
+
+            let cond_bb = str::as_c_str("while_cond", |name| {
+                llvm::LLVMAppendBasicBlock(func, name)
+            });
+            let do_bb = str::as_c_str("while_do", |name| {
+                llvm::LLVMAppendBasicBlock(func, name)
+            });
+            let end_bb = str::as_c_str("while_end", |name| {
+                llvm::LLVMAppendBasicBlock(func, name)
+            });
+
+            llvm::LLVMBuildBr(ec.builder, cond_bb);
+
+            llvm::LLVMPositionBuilderAtEnd(ec.builder, cond_bb);
+            let cond_val = emit_expr(ec, lvm, *cond);
+            let cond_val = do noname |name| {
+                llvm::LLVMBuildTrunc(ec.builder, cond_val, type_i1(), name)
+            };
+            llvm::LLVMBuildCondBr(ec.builder, cond_val, do_bb, end_bb);
+
+            llvm::LLVMPositionBuilderAtEnd(ec.builder, do_bb);
+            emit_stmt(ec, lvm, *do_stmt, dbg_scope);
+            llvm::LLVMBuildBr(ec.builder, cond_bb);
+
+            llvm::LLVMPositionBuilderAtEnd(ec.builder, end_bb);
+        },
         IfStmt(pos, ref cond, ref then_stmt, ref opt_else_stmt) => unsafe {
             set_debug_loc(ec, pos, dbg_scope);
 

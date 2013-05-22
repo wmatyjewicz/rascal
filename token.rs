@@ -41,6 +41,7 @@ pub enum Token {
     KW_BEGIN,
     KW_BOOLEAN,
     KW_DIV,
+    KW_DO,
     KW_ELSE,
     KW_END,
     KW_FALSE,
@@ -55,6 +56,7 @@ pub enum Token {
     KW_THEN,
     KW_TRUE,
     KW_VAR,
+    KW_WHILE,
     KW_WRITELN,
     
     // Identifier
@@ -72,6 +74,7 @@ pub fn get_keyword_map() -> KeywordMap {
     kw_map.insert(~"begin", KW_BEGIN);
     kw_map.insert(~"boolean", KW_BOOLEAN);
     kw_map.insert(~"div", KW_DIV);
+    kw_map.insert(~"do", KW_DO);
     kw_map.insert(~"else", KW_ELSE);
     kw_map.insert(~"end", KW_END);
     kw_map.insert(~"false", KW_FALSE);
@@ -86,6 +89,7 @@ pub fn get_keyword_map() -> KeywordMap {
     kw_map.insert(~"then", KW_THEN);
     kw_map.insert(~"true", KW_TRUE);
     kw_map.insert(~"var", KW_VAR);
+    kw_map.insert(~"while", KW_WHILE);
     kw_map.insert(~"writeln", KW_WRITELN);
     kw_map
 }

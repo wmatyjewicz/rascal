@@ -45,6 +45,7 @@ pub enum Stmt {
     AssignmentStmt(Position, @str, ~Expr),
     CallStmt(Position, @str, ~[Expr]),
     IfStmt(Position, ~Expr, ~Stmt, Option<~Stmt>),
+    WhileStmt(Position, ~Expr, ~Stmt),
     BlockStmt(Position, Block)
 }
 

@@ -121,6 +121,7 @@ fn parse_block(lexer: &mut Lexer) -> Block {
     Block { pos : pos, stmts: stmts }
 }
 
+// TODO: Change to -> ~Stmt?
 fn parse_stmt(lexer: &mut Lexer) -> Stmt {
     let pos = lexer.token_pos;
     match lexer.token {
@@ -160,11 +161,19 @@ fn parse_stmt(lexer: &mut Lexer) -> Stmt {
             };
             IfStmt(pos, ~cond, ~then_stmt, opt_else_stmt)
         },
+        KW_WHILE => {
+            lexer.consume();
+            let cond = parse_expr(lexer);
+            parse_token(lexer, KW_DO);
+            let do_stmt = parse_stmt(lexer);
+            WhileStmt(pos, ~cond, ~do_stmt)
+        },
         KW_BEGIN => BlockStmt(pos, parse_block(lexer)),
         _ => error_at_token(lexer, "Statement expected.")
     }
 }
 
+// TODO: Change to -> ~Expr?
 fn parse_expr(lexer: &mut Lexer) -> Expr {
     let e1 = parse_simple_expr(lexer);
     let op = match lexer.token {
